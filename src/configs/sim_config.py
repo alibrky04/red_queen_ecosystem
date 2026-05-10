@@ -1,0 +1,6 @@
+WIDTH: int = 800
+HEIGHT: int = 600
+FPS: int = 60
+RENDER_N: int = 100
+GENERATIONS: int = 1000
+MAX_FRAMES: int = 600
