@@ -5,6 +5,8 @@ class NNInputs:
     enemy_dx: float           # -1.0 to 1.0
     enemy_dy: float           # -1.0 to 1.0
     enemy_distance: float     # 0.0 to 1.0
+    enemy_vel_dx: float
+    enemy_vel_dy: float
 
     current_energy: float     # 0.0 to 1.0
     current_hunger: float     # 0.0 to 1.0

@@ -20,7 +20,8 @@ class AppManager:
     
     def __init__(
             self,
-            config_path: str,
+            prey_config_path: str,
+            predator_config_path: str,
             width: int = sim_config.WIDTH,
             height: int = sim_config.HEIGHT,
             fps: int = sim_config.FPS,
@@ -34,14 +35,20 @@ class AppManager:
         
         self.render_enabled = True
         
-        self.config = neat.Config(
+        self.prey_config = neat.Config(
             neat.DefaultGenome, neat.DefaultReproduction,
             neat.DefaultSpeciesSet, neat.DefaultStagnation,
-            config_path
+            prey_config_path
+        )
+
+        self.predator_config = neat.Config(
+            neat.DefaultGenome, neat.DefaultReproduction,
+            neat.DefaultSpeciesSet, neat.DefaultStagnation,
+            predator_config_path
         )
         
-        self.prey_pop = neat.Population(self.config)
-        self.predator_pop = neat.Population(self.config)
+        self.prey_pop = neat.Population(self.prey_config)
+        self.predator_pop = neat.Population(self.predator_config)
         
         self.sim = SimulationController(width, height)
 
@@ -107,14 +114,14 @@ class AppManager:
         center_y_min, center_y_max = self.height // 4, (self.height // 4) * 3
 
         for genome_id, genome in prey_genomes:
-            net = neat.nn.FeedForwardNetwork.create(genome, self.config)
+            net = neat.nn.FeedForwardNetwork.create(genome, self.prey_config)
             agent = Prey(random.randint(center_x_min, center_x_max), 
                          random.randint(center_y_min, center_y_max))
             prey_nets.append((genome, net, agent))
             self.sim.preys.append(agent)
             
         for genome_id, genome in predator_genomes:
-            net = neat.nn.FeedForwardNetwork.create(genome, self.config)
+            net = neat.nn.FeedForwardNetwork.create(genome, self.predator_config)
             
             if random.choice([True, False]):
                 px = random.choice([10, self.width - 10])
@@ -154,6 +161,7 @@ class AppManager:
 
             for genome, net, agent in predator_nets:
                 if agent.is_alive:
+                    agent.hunt_score += (1.0 - inputs.enemy_distance)
                     agent.kills_before_step = agent.kills 
                     
                     inputs = self.sim.get_agent_inputs(agent, self.sim.preys, self.sim.foods)
@@ -207,14 +215,15 @@ class AppManager:
 
     def _calculate_prey_fitness(self, agent) -> float:
         """Calculate fitness for a prey agent."""
-        wall_penalty = agent.wall_frames * 2
-        fitness = (agent.foods * 500) + agent.survival_frames - wall_penalty
+        fitness = (agent.foods * 500) + agent.survival_frames - (agent.wall_frames * 5)
         return max(0.001, fitness)
 
     def _calculate_predator_fitness(self, agent) -> float:
         """Calculate fitness for a predator agent."""
-        wall_penalty = agent.wall_frames * 2
-        fitness = (agent.kills * 1000) + agent.survival_frames - wall_penalty
+        kill_score = agent.kills * 1000
+        hunt_pressure = agent.hunt_score
+        wall_penalty = agent.wall_frames * 5
+        fitness = kill_score + hunt_pressure - wall_penalty
         return max(0.001, fitness)
     
     def add_food(self, n = sim_config.FOOD_COUNT):

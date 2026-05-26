@@ -5,7 +5,8 @@ import src.configs.sim_config as sim_config
 
 if __name__ == "__main__":
     app = AppManager(
-        config_path='config-feedforward.ini',
+        prey_config_path='configs/prey-config.ini',
+        predator_config_path='configs/predator-config.ini',
         width=sim_config.WIDTH,
         height=sim_config.HEIGHT,
         fps=sim_config.FPS,
