@@ -11,6 +11,7 @@ class SimulationController:
         self.height = height
         self.preys = []
         self.predators = []
+        self.foods = []
 
     def update_physics(self):
         self._check_collisions()
@@ -22,47 +23,57 @@ class SimulationController:
                 if not prey.is_alive:
                     continue
                 
-                # Circular collision math
                 dist = math.hypot(predator.x - prey.x, predator.y - prey.y)
                 if dist < (predator.radius + prey.radius):
                     prey.is_alive = False
                     predator.kills += 1
+
+        for prey in self.preys:
+            for food in self.foods:
+                dist = math.hypot(prey.x - food.x, prey.y - food.y)
+                if dist < (prey.radius + food.radius):
+                    self.foods.remove(food)
+                    prey.foods += 1
                     
         self.preys = [p for p in self.preys if p.is_alive]
+        self.predators = [p for p in self.predators if p.is_alive]
     
-    def get_agent_inputs(self, agent, enemies):
+    def get_agent_inputs(self, agent, enemies, foods):
         """Calculates normalized sensory inputs for a given agent."""
         
-        dist_to_left = agent.x / self.width
-        dist_to_right = (self.width - agent.x) / self.width
-        dist_to_top = agent.y / self.height
-        dist_to_bottom = (self.height - agent.y) / self.height
+        whisker_len = 100.0
+        prox_left = max(0.0, 1.0 - (agent.x / whisker_len))
+        prox_right = max(0.0, 1.0 - ((self.width - agent.x) / whisker_len))
+        prox_top = max(0.0, 1.0 - (agent.y / whisker_len))
+        prox_bottom = max(0.0, 1.0 - ((self.height - agent.y) / whisker_len))
 
-        if not enemies:
-            return NNInputs(0.0, 0.0, 1.0, agent.current_energy / agent.max_energy,
-                          dist_to_left, dist_to_right, dist_to_top, dist_to_bottom)
-
-        closest_enemy = None
-        min_dist = float('inf')
-        
-        for enemy in enemies:
-            dist = math.hypot(enemy.x - agent.x, enemy.y - agent.y)
-            if dist < min_dist:
-                min_dist = dist
-                closest_enemy = enemy
-
-        agent.closest_enemy_distance = min(agent.closest_enemy_distance, min_dist)
-
-        raw_dx = closest_enemy.x - agent.x
-        raw_dy = closest_enemy.y - agent.y
-
-        norm_dx = raw_dx / self.width
-        norm_dy = raw_dy / self.height
-        
-        max_possible_dist = math.hypot(self.width, self.height)
-        norm_distance = min_dist / max_possible_dist 
-        
         norm_energy = max(0, agent.current_energy) / agent.max_energy
+        norm_hunger = max(0, agent.current_hunger) / agent.max_hunger
 
-        return NNInputs(norm_dx, norm_dy, norm_distance, norm_energy,
-                       dist_to_left, dist_to_right, dist_to_top, dist_to_bottom)
+        # --- Enemy Sensors ---
+        if not enemies:
+            norm_dx, norm_dy, norm_distance = 0.0, 0.0, 1.0
+        else:
+            closest_enemy = min(enemies, key=lambda e: math.hypot(e.x - agent.x, e.y - agent.y))
+            min_enemy_dist = math.hypot(closest_enemy.x - agent.x, closest_enemy.y - agent.y)
+            max_possible_dist = math.hypot(self.width, self.height)
+            
+            norm_dx = (closest_enemy.x - agent.x) / self.width
+            norm_dy = (closest_enemy.y - agent.y) / self.height
+            norm_distance = min_enemy_dist / max_possible_dist
+
+        # --- Food Sensors ---
+        if not foods:
+            norm_food_dx, norm_food_dy, norm_food_distance = 0.0, 0.0, 1.0
+        else:
+            closest_food = min(foods, key=lambda f: math.hypot(f.x - agent.x, f.y - agent.y))
+            min_food_dist = math.hypot(closest_food.x - agent.x, closest_food.y - agent.y)
+            max_possible_dist = math.hypot(self.width, self.height)
+            
+            norm_food_dx = (closest_food.x - agent.x) / self.width
+            norm_food_dy = (closest_food.y - agent.y) / self.height
+            norm_food_distance = min_food_dist / max_possible_dist
+
+        return NNInputs(norm_dx, norm_dy, norm_distance, norm_energy, norm_hunger,
+                        norm_food_dx, norm_food_dy, norm_food_distance,
+                        prox_left, prox_right, prox_top, prox_bottom)
