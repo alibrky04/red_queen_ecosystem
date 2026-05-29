@@ -1,7 +1,29 @@
 from src.models.base_agent import BaseAgent
+import src.configs.sim_config as sim_config
 
 class Predator(BaseAgent):
-    """Predator agent. Slower, larger radius. Hunts prey."""
-    def __init__(self, x: float, y: float):
-        super().__init__(x=x, y=y, speed=2.5, sprint_speed=6.0, radius=9.0, max_energy=80.0)
-        self.hunt_score = 0
+    def __init__(
+            self,
+            x: float,
+            y: float,
+            radius: float = sim_config.PRED_RADIUS,
+            speed: float = sim_config.PRED_SPEED,
+            sprint_speed: float = sim_config.PRED_SPRINT_SPEED,
+            max_energy: float = sim_config.PRED_MAX_ENERGY,
+            max_hunger: float = sim_config.PRED_MAX_HUNGER
+        ):
+        
+        super().__init__(
+            x=x,
+            y=y,
+            radius=radius,
+            speed=speed,
+            sprint_speed=sprint_speed,
+            max_energy=max_energy,
+            max_hunger= max_hunger
+        )
+
+        self.hunt_score = 0.0
+        self.approach_score = 0.0
+        self.seen_prey_frames = 0
+        self.last_prey_distance = None

@@ -1,9 +1,7 @@
 from src.configs.nn_config import NNOutputs
 
 class BaseAgent:
-    """Base mathematical model for all creatures in the simulation."""
-    
-    def __init__(self, x: float, y: float, speed: float, sprint_speed: float, radius: float, max_energy: float):
+    def __init__(self, x: float, y: float, speed: float, sprint_speed: float, radius: float, max_energy: float, max_hunger: float):
         self.x = x
         self.y = y
         self.base_speed = speed
@@ -14,8 +12,8 @@ class BaseAgent:
         self.max_energy = max_energy
         self.current_energy = max_energy
         
-        self.max_hunger = 100.0
-        self.current_hunger = self.max_hunger
+        self.max_hunger = max_hunger
+        self.current_hunger = max_hunger
         self.hunger_consumption = 0.5
 
         self.energy_consumption_rate = 10
@@ -62,6 +60,11 @@ class BaseAgent:
 
         self.x = max(self.radius, min(self.x, max_width - self.radius))
         self.y = max(self.radius, min(self.y, max_height - self.radius))
+
+        if self.x <= self.radius:              self.vx = max(0.0, self.vx)
+        if self.x >= max_width - self.radius:  self.vx = min(0.0, self.vx)
+        if self.y <= self.radius:              self.vy = max(0.0, self.vy)
+        if self.y >= max_height - self.radius: self.vy = min(0.0, self.vy)
 
         if (self.x <= self.radius + 1 or self.x >= max_width - self.radius - 1 or
             self.y <= self.radius + 1 or self.y >= max_height - self.radius - 1):

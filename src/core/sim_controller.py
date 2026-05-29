@@ -39,7 +39,7 @@ class SimulationController:
         self.predators = [p for p in self.predators if p.is_alive]
     
     def get_agent_inputs(self, agent, enemies, foods):
-        """Calculates normalized sensory inputs for a given agent."""
+        """Calculates normalized sensory inputs for a given agent using sector-based FOV."""
         
         whisker_len = 200.0
         prox_left = max(0.0, 1.0 - (agent.x / whisker_len))
@@ -50,26 +50,53 @@ class SimulationController:
         norm_energy = max(0, agent.current_energy) / agent.max_energy
         norm_hunger = max(0, agent.current_hunger) / agent.max_hunger
 
-        # Enemy sensors
-        if not enemies:
-            norm_dx, norm_dy, norm_distance = 0.0, 0.0, 1.0
-            norm_enemy_vel_dx, norm_enemy_vel_dy = 0.0, 0.0
-        else:
-            closest_enemy = min(enemies, key=lambda e: math.hypot(e.x - agent.x, e.y - agent.y))
-            raw_dx = closest_enemy.x - agent.x
-            raw_dy = closest_enemy.y - agent.y
-            min_enemy_dist = math.hypot(raw_dx, raw_dy)
-            max_possible_dist = math.hypot(self.width, self.height)
+        fov_range = 300.0
+        enemy_sector_distances = [1.0] * 8
+        enemy_sector_velocities = [0.0] * 8
+        enemy_count = 0.0
+        closest_enemy_dx = 0.0
+        closest_enemy_dy = 0.0
+        closest_enemy_distance = 1.0
+        max_possible_dist = math.hypot(self.width, self.height)
+        
+        closest_enemy = None
+        closest_distance = float('inf')
 
-            if min_enemy_dist > 0:
-                norm_dx = raw_dx / min_enemy_dist
-                norm_dy = raw_dy / min_enemy_dist
-            else:
-                norm_dx, norm_dy = 0.0, 0.0
-            norm_distance = min_enemy_dist / max_possible_dist
+        if enemies:
+            for enemy in enemies:
+                raw_dx = enemy.x - agent.x
+                raw_dy = enemy.y - agent.y
+                distance = math.hypot(raw_dx, raw_dy)
+                
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_enemy = enemy
+                    closest_enemy_distance = min(distance / fov_range, 1.0)
+                
+                if distance <= fov_range:
+                    enemy_count += 1
+                    angle = math.atan2(raw_dy, raw_dx)
+                    angle_degrees = math.degrees(angle)
+                    angle_degrees = (angle_degrees + 360) % 360
+                    
+                    sector = int((angle_degrees + 22.5) / 45) % 8
+                    
+                    norm_dist = distance / fov_range
+                    
+                    if norm_dist < enemy_sector_distances[sector]:
+                        enemy_sector_distances[sector] = norm_dist
+                        vel_magnitude = math.hypot(enemy.vx, enemy.vy)
+                        enemy_sector_velocities[sector] = vel_magnitude / 10.0
 
-            norm_enemy_vel_dx = closest_enemy.vx
-            norm_enemy_vel_dy = closest_enemy.vy
+            enemy_count = min(1.0, enemy_count / 5.0)
+            
+            if closest_enemy is not None:
+                raw_dx = closest_enemy.x - agent.x
+                raw_dy = closest_enemy.y - agent.y
+                dist = math.hypot(raw_dx, raw_dy)
+                if dist > 0:
+                    closest_enemy_dx = raw_dx / dist
+                    closest_enemy_dy = raw_dy / dist
 
         # Food sensors
         if not foods:
@@ -79,7 +106,6 @@ class SimulationController:
             raw_food_dx = closest_food.x - agent.x
             raw_food_dy = closest_food.y - agent.y
             min_food_dist = math.hypot(raw_food_dx, raw_food_dy)
-            max_possible_dist = math.hypot(self.width, self.height)
 
             if min_food_dist > 0:
                 norm_food_dx = raw_food_dx / min_food_dist
@@ -88,11 +114,12 @@ class SimulationController:
                 norm_food_dx, norm_food_dy = 0.0, 0.0
             norm_food_distance = min_food_dist / max_possible_dist
 
-        return NNInputs(enemy_dx=norm_dx,
-                        enemy_dy=norm_dy,
-                        enemy_distance=norm_distance,
-                        enemy_vel_dx=norm_enemy_vel_dx,
-                        enemy_vel_dy=norm_enemy_vel_dy,
+        return NNInputs(enemy_sector_distances=enemy_sector_distances,
+                        enemy_sector_velocities=enemy_sector_velocities,
+                        enemy_count=enemy_count,
+                        closest_enemy_dx=closest_enemy_dx,
+                        closest_enemy_dy=closest_enemy_dy,
+                        closest_enemy_distance=closest_enemy_distance,
                         current_energy=norm_energy,
                         current_hunger=norm_hunger,
                         food_dx=norm_food_dx,

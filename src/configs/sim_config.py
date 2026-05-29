@@ -1,7 +1,21 @@
 WIDTH: int = 800
 HEIGHT: int = 600
 FPS: int = 60
+
 RENDER_N: int = 100
 GENERATIONS: int = 500
 MAX_FRAMES: int = 600
+
 FOOD_COUNT: int = 30
+
+PREY_RADIUS: float = 8.0
+PREY_SPEED: float = 4.0
+PREY_SPRINT_SPEED: float = 8.5
+PREY_MAX_ENERGY: float = 200.0
+PREY_MAX_HUNGER: float = 100.0
+
+PRED_RADIUS: float = 9.0
+PRED_SPEED: float = 4.2
+PRED_SPRINT_SPEED: float = 8.0
+PRED_MAX_ENERGY: float = 140.0
+PRED_MAX_HUNGER: float = 100.0
