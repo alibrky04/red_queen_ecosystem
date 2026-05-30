@@ -111,10 +111,16 @@ class AppManager:
         center_x = self.renderer.screen.get_width() // 2
         center_y = self.renderer.screen.get_height() // 2
         
-        start_btn = pygame.Rect(center_x - 400, center_y - 60, 200, 50)
-        load_btn = pygame.Rect(center_x - 400, center_y + 10, 200, 50)
-        exit_btn = pygame.Rect(center_x - 400, center_y + 80, 200, 50)
-        main_buttons = [(start_btn, "Train New Models"), (load_btn, "Watch Best Models"), (exit_btn, "Exit Simulation")]
+        start_btn = pygame.Rect(center_x - 400, center_y - 95, 220, 45)
+        batch_btn = pygame.Rect(center_x - 400, center_y - 35, 220, 45)
+        load_btn = pygame.Rect(center_x - 400, center_y + 25, 220, 45)
+        exit_btn = pygame.Rect(center_x - 400, center_y + 85, 220, 45)
+        main_buttons = [
+            (start_btn, "Train New Models"),
+            (batch_btn, "Batch Eval: 5 Seeds"),
+            (load_btn, "Watch Best Models"),
+            (exit_btn, "Exit Simulation")
+        ]
 
         use_custom = False
         config_state = {
@@ -208,6 +214,7 @@ class AppManager:
                     clicked_on_input = False
                     
                     if start_btn.collidepoint((mx, my)): running = False; result = "START"
+                    if batch_btn.collidepoint((mx, my)): running = False; result = "BATCH"
                     if load_btn.collidepoint((mx, my)): running = False; result = "LOAD"
                     if exit_btn.collidepoint((mx, my)): pygame.quit(); exit()
                     
@@ -240,7 +247,7 @@ class AppManager:
             self.renderer.draw_main_menu(bg_sim, mx, my, main_buttons, config_state, config_rects, use_custom, layout_headers, active_input_key, temp_input_text)
             clock.tick(30)
             
-        if result == "START" and use_custom:
+        if result in ["START", "BATCH"] and use_custom:
             sim_config.GENERATIONS = int(config_state['generations']['val'])
             sim_config.RENDER_N = int(config_state['render_n']['val'])
             sim_config.MAX_FRAMES = int(config_state['max_frames']['val'])
@@ -470,6 +477,43 @@ class AppManager:
 
             pygame.display.flip()
             clock.tick(30)
+        
+    def _draw_batch_progress(self, seed_index: int, total_seeds: int, seed: int, generations: int):
+        """Shows a lightweight one-frame progress message before each batch seed."""
+        if not self.renderer:
+            return
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.app_quit_requested = True
+                return
+
+        self.renderer.screen.fill(self.renderer.BG_COLOR)
+        center_x = self.renderer.screen.get_width() // 2
+        center_y = self.renderer.screen.get_height() // 2
+
+        title = self.renderer.title_font.render("BATCH EVALUATION", True, self.renderer.TEXT_COLOR)
+        line_1 = self.renderer.font.render(
+            f"Seed {seed_index + 1} / {total_seeds}  |  random.seed({seed})",
+            True,
+            self.renderer.TEXT_COLOR
+        )
+        line_2 = self.renderer.font.render(
+            f"Generations per seed: {generations}",
+            True,
+            self.renderer.TEXT_COLOR
+        )
+        line_3 = self.renderer.font.render(
+            "Rendering is disabled during batch runs. Check console/results folder for progress.",
+            True,
+            (180, 180, 180)
+        )
+
+        self.renderer.screen.blit(title, (center_x - title.get_width() // 2, center_y - 50))
+        self.renderer.screen.blit(line_1, (center_x - line_1.get_width() // 2, center_y - 20))
+        self.renderer.screen.blit(line_2, (center_x - line_2.get_width() // 2, center_y + 10))
+        self.renderer.screen.blit(line_3, (center_x - line_3.get_width() // 2, center_y + 40))
+        pygame.display.flip()
     
     def reset_training_state(self, clear_metrics=True):
         """Starts a fresh NEAT run using the current config values."""
@@ -499,7 +543,12 @@ class AppManager:
         if hasattr(self, "best_predator_raw_fitness"):
             self.best_predator_raw_fitness = float("-inf")
 
-    def start_training(self, generations: int = sim_config.GENERATIONS):
+    def start_training(
+		self,
+		generations: int = sim_config.GENERATIONS,
+		metrics_filename: str = "results/evolution_metrics.csv",
+		ask_to_save: bool = True
+		):
         """Runs training. Returns 'COMPLETED', 'STOPPED', or 'EXIT'."""
         print(f"Starting Co-Evolution for {generations} generations...")
 
@@ -542,17 +591,17 @@ class AppManager:
             self._advance_generation(self.prey_pop)
             self._advance_generation(self.predator_pop)
             
-        self.export_metrics_to_csv()
+        self.export_metrics_to_csv(metrics_filename)
 
         if self.app_quit_requested:
             return "EXIT"
 
         if self.training_abort_requested:
-            if self.metrics_history:
+            if ask_to_save and self.metrics_history:
                 self.ask_to_save_run("Training Stopped")
             return "STOPPED"
 
-        if self.metrics_history:
+        if ask_to_save and self.metrics_history:
             self.ask_to_save_run("Training Finished")
 
         return "COMPLETED"
@@ -635,6 +684,13 @@ class AppManager:
         ):
             if self.render_enabled:
                 self._handle_events()
+            else:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        self.training_abort_requested = True
+                        self.app_quit_requested = True
+                        is_running = False
+                        break
             
             if not self.is_paused:
                 missing_food = sim_config.FOOD_COUNT - len(self.sim.foods)
@@ -740,8 +796,12 @@ class AppManager:
                 )
                 clock.tick(self.fps)
             else:
-                if generation_frames % 30 == 0:
-                    self.renderer.draw_training_screen(current_gen_number, sim_config.GENERATIONS, self.is_paused)
+                if self.render_enabled and self.renderer and generation_frames % 30 == 0:
+                    self.renderer.draw_training_screen(
+                        current_gen_number,
+                        sim_config.GENERATIONS,
+                        self.is_paused
+                    )
                 
             if self.training_abort_requested or self.app_quit_requested:
                 is_running = False
@@ -1070,6 +1130,172 @@ class AppManager:
 
         root.destroy()
         return filepath if filepath else None
+    
+    def _mean_metric(self, rows, key: str) -> float:
+        values = [float(row.get(key, 0) or 0) for row in rows]
+        return round(sum(values) / len(values), 3) if values else 0.0
+    
+    def _summarize_metrics_window(self, rows, window: int) -> dict:
+        """Calculates final-window summary metrics for a completed training run."""
+        subset = rows[-window:] if len(rows) >= window else rows[:]
+        actual_window = len(subset)
+
+        if actual_window == 0:
+            return {
+                f"last_{window}_actual_window": 0,
+                f"last_{window}_balance_score": 0.0
+            }
+
+        avg_kills = self._mean_metric(subset, "total_kills")
+        avg_prey_alive = self._mean_metric(subset, "alive_prey_end")
+        avg_pred_alive = self._mean_metric(subset, "alive_pred_end")
+        avg_prey_survival = self._mean_metric(subset, "avg_prey_survival")
+        avg_food = self._mean_metric(subset, "total_food")
+        zero_prey_gens = sum(1 for row in subset if float(row.get("alive_prey_end", 0) or 0) <= 0)
+        predator_death_gens = sum(
+            1 for row in subset
+            if float(row.get("alive_pred_end", 0) or 0) < self.predator_config.pop_size
+        )
+
+        balance_score = (
+            - abs(avg_kills - 39.0) * 2.0
+            - abs(avg_prey_alive - 4.0) * 8.0
+            - zero_prey_gens * 1.5
+            - abs(avg_pred_alive - 8.7) * 5.0
+            + avg_prey_survival * 0.05
+            + avg_food * 0.02
+        )
+
+        prefix = f"last_{window}"
+        return {
+            f"{prefix}_actual_window": actual_window,
+            f"{prefix}_avg_prey_survival": avg_prey_survival,
+            f"{prefix}_avg_total_kills": avg_kills,
+            f"{prefix}_avg_prey_alive_end": avg_prey_alive,
+            f"{prefix}_avg_pred_alive_end": avg_pred_alive,
+            f"{prefix}_avg_total_food": avg_food,
+            f"{prefix}_zero_prey_generations": zero_prey_gens,
+            f"{prefix}_predator_death_generations": predator_death_gens,
+            f"{prefix}_avg_prey_nodes": self._mean_metric(subset, "avg_prey_nodes"),
+            f"{prefix}_avg_prey_connections": self._mean_metric(subset, "avg_prey_connections"),
+            f"{prefix}_avg_pred_nodes": self._mean_metric(subset, "avg_pred_nodes"),
+            f"{prefix}_avg_pred_connections": self._mean_metric(subset, "avg_pred_connections"),
+            f"{prefix}_balance_score": round(balance_score, 3)
+        }
+    
+    def _summarize_current_run(self, seed: int, status: str) -> dict:
+        """Builds one summary row from self.metrics_history after a seed finishes."""
+        summary = {
+            "seed": seed,
+            "status": status,
+            "generations_completed": len(self.metrics_history),
+            "best_prey_raw_fitness": round(self.best_prey_raw_fitness, 3),
+            "best_predator_raw_fitness": round(self.best_predator_raw_fitness, 3),
+        }
+
+        summary.update(self._summarize_metrics_window(self.metrics_history, 100))
+        summary.update(self._summarize_metrics_window(self.metrics_history, 50))
+        summary.update(self._summarize_metrics_window(self.metrics_history, 20))
+        summary.update(self._get_sim_config_snapshot())
+        return summary
+    
+    def _export_batch_summary(self, summaries: list[dict], filename: str):
+        if not summaries:
+            return
+
+        output_dir = os.path.dirname(filename)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        keys = []
+        for row in summaries:
+            for key in row.keys():
+                if key not in keys:
+                    keys.append(key)
+
+        with open(filename, "w", newline="") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(summaries)
+
+        print(f"Batch summary exported to {filename}")
+    
+    def run_batch_evaluation(
+		self,
+		seeds: list[int] | None = None,
+		generations: int | None = None,
+		output_dir: str = "results/batch_current_config"
+		):
+        """Runs the current configuration across multiple random seeds without render/save dialogs."""
+        if seeds is None:
+            seeds = [0, 1, 2, 3, 4]
+
+        if generations is None:
+            generations = sim_config.GENERATIONS
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        old_render_enabled = self.render_enabled
+        old_seed = getattr(self, "current_batch_seed", None)
+        old_label = getattr(self, "current_run_label", None)
+
+        summaries = []
+
+        print("=" * 70)
+        print(f"Starting batch evaluation: {len(seeds)} seeds x {generations} generations")
+        print(f"Output directory: {output_dir}")
+        print("=" * 70)
+
+        try:
+            self.is_paused = False
+
+            for seed_index, seed in enumerate(seeds):
+                if self.app_quit_requested:
+                    break
+
+                self.render_enabled = True
+                self._draw_batch_progress(seed_index, len(seeds), seed, generations)
+                self.render_enabled = False
+
+                if self.app_quit_requested:
+                    break
+
+                print("=" * 70)
+                print(f"Batch seed {seed_index + 1}/{len(seeds)}: random.seed({seed})")
+                print("=" * 70)
+
+                random.seed(seed)
+                self.reset_training_state(clear_metrics=True)
+                self.current_batch_seed = seed
+                self.current_run_label = f"current_config_seed_{seed}"
+
+                metrics_path = os.path.join(output_dir, f"seed_{seed}.csv")
+                status = self.start_training(
+                    generations=generations,
+                    metrics_filename=metrics_path,
+                    ask_to_save=False
+                )
+
+                summaries.append(self._summarize_current_run(seed, status))
+
+                if status == "EXIT" or self.app_quit_requested:
+                    break
+
+        finally:
+            self.render_enabled = old_render_enabled
+            self.current_batch_seed = old_seed
+            self.current_run_label = old_label
+            self.is_paused = False
+
+        summary_path = os.path.join(output_dir, "summary.csv")
+        self._export_batch_summary(summaries, summary_path)
+
+        print("=" * 70)
+        print("Batch evaluation finished.")
+        print(f"Per-seed CSV files and summary are in: {output_dir}")
+        print("=" * 70)
+
+        return summaries
 
     def save_best_models(self, prey_genome=None, pred_genome=None, filename=None, use_dialog=True):
         """Saves the highest performing genomes and run metadata to a selected file."""

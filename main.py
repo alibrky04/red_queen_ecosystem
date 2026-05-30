@@ -32,6 +32,18 @@ if __name__ == "__main__":
 
                 title = "Training Finished" if run_status == "COMPLETED" else "Training Stopped"
                 next_action = app.show_end_screen(title)
+            
+            elif choice == "BATCH":
+                app.run_batch_evaluation(
+                    seeds=[0, 1, 2, 3, 4],
+                    generations=sim_config.GENERATIONS,
+                    output_dir="results/batch_current_config"
+                )
+
+                if app.app_quit_requested:
+                    break
+
+                next_action = app.show_end_screen("Batch Evaluation Finished")
 
             elif choice == "LOAD":
                 prey_genome, pred_genome = app.load_best_models(use_dialog=True)
