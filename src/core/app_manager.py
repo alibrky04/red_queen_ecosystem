@@ -5,6 +5,9 @@ import math
 import csv
 import pickle
 import os
+import copy
+import tkinter as tk
+from tkinter import filedialog
 
 from src.models.prey import Prey
 from src.models.predator import Predator
@@ -73,6 +76,12 @@ class AppManager:
         self.sim = SimulationController(width, height)
 
         self.metrics_history = []
+
+        self.best_prey_genome = None
+        self.best_predator_genome = None
+        self.best_prey_raw_fitness = float("-inf")
+        self.best_predator_raw_fitness = float("-inf")
+        self.loaded_model_metadata = {}
         
         if self.render_enabled:
             self.renderer = RenderController(width, height)
@@ -82,6 +91,9 @@ class AppManager:
         self.is_paused = False
         self.selected_entity = None
         self.is_dragging = False
+
+        self.training_abort_requested = False
+        self.app_quit_requested = False
     
     def show_main_menu(self):
         if not self.render_enabled or not self.renderer: return "START"
@@ -254,12 +266,250 @@ class AppManager:
             sim_config.PRED_SPRINT_SPEED = float(config_state['pred_sprint']['val'])
             
         return result
+    
+    def show_end_screen(self, title="Simulation Finished"):
+        if not self.render_enabled or not self.renderer:
+            return "EXIT"
+
+        clock = pygame.time.Clock()
+
+        center_x = self.renderer.screen.get_width() // 2
+        center_y = self.renderer.screen.get_height() // 2
+
+        main_menu_btn = pygame.Rect(center_x - 140, center_y - 95, 280, 45)
+        new_run_btn = pygame.Rect(center_x - 140, center_y - 35, 280, 45)
+        load_btn = pygame.Rect(center_x - 140, center_y + 25, 280, 45)
+        exit_btn = pygame.Rect(center_x - 140, center_y + 85, 280, 45)
+
+        buttons = [
+            (main_menu_btn, "Main Menu", "MAIN_MENU"),
+            (new_run_btn, "New Run: Current Config", "NEW_RUN"),
+            (load_btn, "Load a Saved Model", "LOAD_LAST"),
+            (exit_btn, "Exit Simulation", "EXIT")
+        ]
+
+        while True:
+            mx, my = pygame.mouse.get_pos()
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return "EXIT"
+
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return "EXIT"
+
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    for rect, _, action in buttons:
+                        if rect.collidepoint((mx, my)):
+                            return action
+
+            self.renderer.screen.fill(self.renderer.BG_COLOR)
+
+            overlay = pygame.Surface(
+                (self.renderer.screen.get_width(), self.renderer.screen.get_height()),
+                pygame.SRCALPHA
+            )
+            overlay.fill((0, 0, 0, 210))
+            self.renderer.screen.blit(overlay, (0, 0))
+
+            title_surface = self.renderer.title_font.render(title, True, self.renderer.TEXT_COLOR)
+            self.renderer.screen.blit(
+                title_surface,
+                (center_x - title_surface.get_width() // 2, center_y - 160)
+            )
+
+            subtitle = "Choose what to do next"
+            subtitle_surface = self.renderer.font.render(subtitle, True, self.renderer.TEXT_COLOR)
+            self.renderer.screen.blit(
+                subtitle_surface,
+                (center_x - subtitle_surface.get_width() // 2, center_y - 130)
+            )
+
+            for rect, text, _ in buttons:
+                is_hovered = rect.collidepoint((mx, my))
+
+                if text == "Exit Simulation":
+                    color = (150, 60, 60) if is_hovered else (80, 45, 45)
+                elif text == "New Run: Current Config":
+                    color = (70, 150, 90) if is_hovered else (45, 90, 55)
+                elif text == "Load Last Saved Model":
+                    color = (80, 120, 180) if is_hovered else (45, 65, 95)
+                else:
+                    color = (120, 120, 120) if is_hovered else (65, 65, 65)
+
+                pygame.draw.rect(self.renderer.screen, color, rect, border_radius=6)
+                pygame.draw.rect(self.renderer.screen, (220, 220, 220), rect, 2, border_radius=6)
+
+                label = self.renderer.font.render(text, True, (255, 255, 255))
+                self.renderer.screen.blit(
+                    label,
+                    (
+                        rect.x + rect.width // 2 - label.get_width() // 2,
+                        rect.y + rect.height // 2 - label.get_height() // 2
+                    )
+                )
+
+            pygame.display.flip()
+            clock.tick(30)
+    
+    def ask_to_save_run(self, title="Run Finished"):
+        """Asks whether to save the best model after a run."""
+        if not self.render_enabled or not self.renderer:
+            return "SKIP"
+
+        has_saveable_model = (
+            getattr(self, "best_prey_genome", None) is not None
+            and getattr(self, "best_predator_genome", None) is not None
+        )
+
+        if not has_saveable_model:
+            print("No best model available to save.")
+            return "SKIP"
+
+        clock = pygame.time.Clock()
+
+        center_x = self.renderer.screen.get_width() // 2
+        center_y = self.renderer.screen.get_height() // 2
+
+        save_btn = pygame.Rect(center_x - 140, center_y - 40, 280, 45)
+        skip_btn = pygame.Rect(center_x - 140, center_y + 20, 280, 45)
+        exit_btn = pygame.Rect(center_x - 140, center_y + 80, 280, 45)
+
+        buttons = [
+            (save_btn, "Save Best Model", "SAVE"),
+            (skip_btn, "Don't Save", "SKIP"),
+            (exit_btn, "Exit Simulation", "EXIT")
+        ]
+
+        while True:
+            mx, my = pygame.mouse.get_pos()
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.app_quit_requested = True
+                    return "EXIT"
+
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_s:
+                        self.save_best_models(use_dialog=True)
+                        return "SAVE"
+
+                    if event.key == pygame.K_n or event.key == pygame.K_ESCAPE:
+                        return "SKIP"
+
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    for rect, _, action in buttons:
+                        if rect.collidepoint((mx, my)):
+                            if action == "SAVE":
+                                self.save_best_models(use_dialog=True)
+                                return "SAVE"
+
+                            if action == "EXIT":
+                                self.app_quit_requested = True
+                                return "EXIT"
+
+                            return "SKIP"
+
+            self.renderer.screen.fill(self.renderer.BG_COLOR)
+
+            overlay = pygame.Surface(
+                (self.renderer.screen.get_width(), self.renderer.screen.get_height()),
+                pygame.SRCALPHA
+            )
+            overlay.fill((0, 0, 0, 215))
+            self.renderer.screen.blit(overlay, (0, 0))
+
+            title_surface = self.renderer.title_font.render(title, True, self.renderer.TEXT_COLOR)
+            self.renderer.screen.blit(
+                title_surface,
+                (center_x - title_surface.get_width() // 2, center_y - 135)
+            )
+
+            subtitle_surface = self.renderer.font.render(
+                "Do you want to save the best model from this run?",
+                True,
+                self.renderer.TEXT_COLOR
+            )
+            self.renderer.screen.blit(
+                subtitle_surface,
+                (center_x - subtitle_surface.get_width() // 2, center_y - 105)
+            )
+
+            shortcut_surface = self.renderer.font.render(
+                "[S] Save    [N / ESC] Don't Save",
+                True,
+                (180, 180, 180)
+            )
+            self.renderer.screen.blit(
+                shortcut_surface,
+                (center_x - shortcut_surface.get_width() // 2, center_y - 80)
+            )
+
+            for rect, text, _ in buttons:
+                is_hovered = rect.collidepoint((mx, my))
+
+                if text == "Save Best Model":
+                    color = (70, 150, 90) if is_hovered else (45, 90, 55)
+                elif text == "Don't Save":
+                    color = (120, 120, 120) if is_hovered else (65, 65, 65)
+                else:
+                    color = (150, 60, 60) if is_hovered else (80, 45, 45)
+
+                pygame.draw.rect(self.renderer.screen, color, rect, border_radius=6)
+                pygame.draw.rect(self.renderer.screen, (220, 220, 220), rect, 2, border_radius=6)
+
+                label = self.renderer.font.render(text, True, (255, 255, 255))
+                self.renderer.screen.blit(
+                    label,
+                    (
+                        rect.x + rect.width // 2 - label.get_width() // 2,
+                        rect.y + rect.height // 2 - label.get_height() // 2
+                    )
+                )
+
+            pygame.display.flip()
+            clock.tick(30)
+    
+    def reset_training_state(self, clear_metrics=True):
+        """Starts a fresh NEAT run using the current config values."""
+        self.prey_pop = neat.Population(self.prey_config)
+        self.predator_pop = neat.Population(self.predator_config)
+
+        self.sim.preys.clear()
+        self.sim.predators.clear()
+        self.sim.foods.clear()
+
+        self.is_paused = False
+        self.selected_entity = None
+        self.is_dragging = False
+
+        self.training_abort_requested = False
+        self.app_quit_requested = False
+
+        if clear_metrics:
+            self.metrics_history = []
+
+        if hasattr(self, "best_prey_genome"):
+            self.best_prey_genome = None
+        if hasattr(self, "best_predator_genome"):
+            self.best_predator_genome = None
+        if hasattr(self, "best_prey_raw_fitness"):
+            self.best_prey_raw_fitness = float("-inf")
+        if hasattr(self, "best_predator_raw_fitness"):
+            self.best_predator_raw_fitness = float("-inf")
 
     def start_training(self, generations: int = sim_config.GENERATIONS):
-        """The main loop. Runs the evolutionary generations."""
+        """Runs training. Returns 'COMPLETED', 'STOPPED', or 'EXIT'."""
         print(f"Starting Co-Evolution for {generations} generations...")
+
+        self.training_abort_requested = False
+        self.app_quit_requested = False
         
         for generation in range(generations):
+            if self.training_abort_requested or self.app_quit_requested:
+                break
+
             print(f"--- Generation {generation + 1} ---")
             
             prey_genomes = list(self.prey_pop.population.items())
@@ -269,20 +519,43 @@ class AppManager:
             if render_this_gen:
                 print(f"Displaying Generation {generation + 1} visually...")
             
-            prey_nets, predator_nets = self.evaluate_generation(prey_genomes, predator_genomes, render_this_gen)
+            prey_nets, predator_nets = self.evaluate_generation(
+                prey_genomes,
+                predator_genomes,
+                render_this_gen
+            )
+
+            if self.app_quit_requested:
+                break
 
             self._assign_scaled_fitness(prey_nets, self._calculate_prey_fitness)
             self._assign_scaled_fitness(predator_nets, self._calculate_predator_fitness)
 
+            if hasattr(self, "_update_best_genomes"):
+                self._update_best_genomes(prey_nets, predator_nets)
+
             self.log_and_print_metrics(generation + 1, prey_nets, predator_nets)
+
+            if self.training_abort_requested:
+                break
 
             self._advance_generation(self.prey_pop)
             self._advance_generation(self.predator_pop)
             
         self.export_metrics_to_csv()
-        
-        if self.render_enabled:
-            self.renderer.quit()
+
+        if self.app_quit_requested:
+            return "EXIT"
+
+        if self.training_abort_requested:
+            if self.metrics_history:
+                self.ask_to_save_run("Training Stopped")
+            return "STOPPED"
+
+        if self.metrics_history:
+            self.ask_to_save_run("Training Finished")
+
+        return "COMPLETED"
     
     def _advance_generation(self, pop):
         """Manually handles the NEAT reproduction and speciation lifecycle."""
@@ -354,7 +627,12 @@ class AppManager:
         
         current_gen_number = self.prey_pop.generation + 1
         
-        while is_running and generation_frames < max_frames:
+        while (
+            is_running
+            and generation_frames < max_frames
+            and not self.training_abort_requested
+            and not self.app_quit_requested
+        ):
             if self.render_enabled:
                 self._handle_events()
             
@@ -465,14 +743,17 @@ class AppManager:
                 if generation_frames % 30 == 0:
                     self.renderer.draw_training_screen(current_gen_number, sim_config.GENERATIONS, self.is_paused)
                 
+            if self.training_abort_requested or self.app_quit_requested:
+                is_running = False
+
             if len(self.sim.preys) == 0:
                 is_running = False
 
         return prey_nets, predator_nets
 
     def _calculate_prey_fitness(self, agent, genome) -> float:
-        node_cost = len(genome.nodes) * 2
-        conn_cost = len([c for c in genome.connections.values() if c.enabled]) * 0.5
+        node_cost = len(genome.nodes) * 1
+        conn_cost = len([c for c in genome.connections.values() if c.enabled]) * 0.25
         metabolic_penalty = node_cost + conn_cost
         
         alive_bonus = 400 if agent.is_alive else 0
@@ -538,7 +819,33 @@ class AppManager:
         min_raw = min(raws)
 
         for (genome, _, _), raw in zip(nets, raws):
+            genome.raw_fitness = raw
             genome.fitness = max(0.001, raw - min_raw + 1.0)
+
+    def _update_best_genomes(self, prey_nets, predator_nets):
+        if prey_nets:
+            best_prey_genome, _, _ = max(
+                prey_nets,
+                key=lambda item: getattr(item[0], "raw_fitness", float("-inf"))
+            )
+
+            best_prey_score = getattr(best_prey_genome, "raw_fitness", float("-inf"))
+            if best_prey_score > self.best_prey_raw_fitness:
+                self.best_prey_raw_fitness = best_prey_score
+                self.best_prey_genome = copy.deepcopy(best_prey_genome)
+                self.prey_pop.best_genome = copy.deepcopy(best_prey_genome)
+
+        if predator_nets:
+            best_predator_genome, _, _ = max(
+                predator_nets,
+                key=lambda item: getattr(item[0], "raw_fitness", float("-inf"))
+            )
+
+            best_predator_score = getattr(best_predator_genome, "raw_fitness", float("-inf"))
+            if best_predator_score > self.best_predator_raw_fitness:
+                self.best_predator_raw_fitness = best_predator_score
+                self.best_predator_genome = copy.deepcopy(best_predator_genome)
+                self.predator_pop.best_genome = copy.deepcopy(best_predator_genome)
     
     def _closest_prey_distance(self, predator):
         living_preys = [p for p in self.sim.preys if p.is_alive]
@@ -573,16 +880,21 @@ class AppManager:
         """Listens for Pygame events: quit signals, UI interactions, and hotkeys."""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                exit()
+                self.training_abort_requested = True
+                self.app_quit_requested = True
+                self.is_paused = False
+                return
             
-            # --- KEYBOARD CONTROLS ---
             elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.training_abort_requested = True
+                    self.is_paused = False
+                    return
+
                 if event.key == pygame.K_SPACE:
                     self.is_paused = not self.is_paused
                 
                 if self.selected_entity:
-                    # Kill / Delete
                     if event.key in [pygame.K_DELETE, pygame.K_BACKSPACE]:
                         if hasattr(self.selected_entity, 'is_alive'):
                             self.selected_entity.is_alive = False
@@ -591,15 +903,12 @@ class AppManager:
                         self.selected_entity = None
                         self.is_dragging = False
                         
-                    # Refill Hunger
                     elif event.key == pygame.K_h and hasattr(self.selected_entity, 'current_hunger'):
                         self.selected_entity.current_hunger = self.selected_entity.max_hunger
                         
-                    # Refill Energy
                     elif event.key == pygame.K_e and hasattr(self.selected_entity, 'current_energy'):
                         self.selected_entity.current_energy = self.selected_entity.max_energy
 
-            # --- MOUSE CONTROLS ---
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     mx, my = event.pos
@@ -632,6 +941,23 @@ class AppManager:
                     if 0 < mx < self.width and 0 < my < self.height:
                         self.selected_entity.x = mx
                         self.selected_entity.y = my
+    
+    def _get_sim_config_snapshot(self) -> dict:
+        config_values = {}
+
+        for name in dir(sim_config):
+            if not name.isupper():
+                continue
+
+            value = getattr(sim_config, name)
+
+            if isinstance(value, (int, float, str, bool)):
+                config_values[f"config_{name.lower()}"] = value
+
+        config_values["config_prey_pop_size"] = self.prey_config.pop_size
+        config_values["config_predator_pop_size"] = self.predator_config.pop_size
+
+        return config_values
 
     def log_and_print_metrics(self, generation, prey_nets, predator_nets):
         """Extracts behavioral data, prints a summary, and stores it for graphing."""
@@ -666,13 +992,18 @@ class AppManager:
             "avg_predator_kills": round(avg_predator_kills, 2),
             "max_predator_kills": max_predator_kills,
             "total_kills": total_kills,
-            "avg_prey_nodes": round(sum(prey_nodes) / len(prey_nodes), 2),
-            "avg_prey_connections": round(sum(prey_conns) / len(prey_conns), 2),
-            "avg_pred_nodes": round(sum(pred_nodes) / len(pred_nodes), 2),
-            "avg_pred_connections": round(sum(pred_conns) / len(pred_conns), 2),
+            "avg_prey_nodes": round(sum(prey_nodes) / len(prey_nodes), 2) if prey_nodes else 0,
+            "avg_prey_connections": round(sum(prey_conns) / len(prey_conns), 2) if prey_conns else 0,
+            "avg_pred_nodes": round(sum(pred_nodes) / len(pred_nodes), 2) if pred_nodes else 0,
+            "avg_pred_connections": round(sum(pred_conns) / len(pred_conns), 2) if pred_conns else 0,
             "alive_prey_end": alive_prey_end,
-            "alive_pred_end": alive_pred_end
+            "alive_pred_end": alive_pred_end,
+            "best_prey_raw_fitness": round(self.best_prey_raw_fitness, 2),
+            "best_predator_raw_fitness": round(self.best_predator_raw_fitness, 2)
         }
+
+        stats.update(self._get_sim_config_snapshot())
+
         self.metrics_history.append(stats)
 
         print(f"PREY     | Avg Survival: {stats['avg_prey_survival']:<6} | Max Survival: {stats['max_prey_survival']:<4} | Total Food: {stats['total_food']}")
@@ -680,33 +1011,192 @@ class AppManager:
         print("-" * 60)
 
     def export_metrics_to_csv(self, filename="results/evolution_metrics.csv"):
-        """Saves the history to a CSV for your project report graphs."""
+        """Saves the history to a CSV."""
         if not self.metrics_history:
             return
+
+        output_dir = os.path.dirname(filename)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
             
-        keys = self.metrics_history[0].keys()
+        keys = list(self.metrics_history[0].keys())
+
         with open(filename, 'w', newline='') as output_file:
             dict_writer = csv.DictWriter(output_file, fieldnames=keys)
             dict_writer.writeheader()
             dict_writer.writerows(self.metrics_history)
+
         print(f"Metrics successfully exported to {filename}")
+    
+    def _get_model_dialog_initial_dir(self):
+        checkpoint_dir = os.path.abspath("checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        return checkpoint_dir
 
-    def save_best_models(self, prey_genome, pred_genome, filename="best_models.pkl"):
-        """Saves the highest performing genomes to a file."""
-        os.makedirs("checkpoints", exist_ok=True)
-        filepath = os.path.join("checkpoints", filename)
-        with open(filepath, 'wb') as f:
-            pickle.dump({'prey': prey_genome, 'predator': pred_genome}, f)
-        print(f"SUCCESS: Best models saved to {filepath}")
+    def _ask_model_save_path(self):
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
 
-    def load_best_models(self, filename="best_models.pkl"):
-        """Loads the best genomes from a file."""
-        filepath = os.path.join("checkpoints", filename)
-        if os.path.exists(filepath):
-            with open(filepath, 'rb') as f:
-                data = pickle.load(f)
-            print(f"SUCCESS: Models loaded from {filepath}")
-            return data['prey'], data['predator']
+        filepath = filedialog.asksaveasfilename(
+            title="Save Best Models",
+            initialdir=self._get_model_dialog_initial_dir(),
+            initialfile="best_models.pkl",
+            defaultextension=".pkl",
+            filetypes=[
+                ("Pickle model files", "*.pkl"),
+                ("All files", "*.*")
+            ]
+        )
+
+        root.destroy()
+        return filepath if filepath else None
+
+    def _ask_model_load_path(self):
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+
+        filepath = filedialog.askopenfilename(
+            title="Load Saved Models",
+            initialdir=self._get_model_dialog_initial_dir(),
+            filetypes=[
+                ("Pickle model files", "*.pkl"),
+                ("All files", "*.*")
+            ]
+        )
+
+        root.destroy()
+        return filepath if filepath else None
+
+    def save_best_models(self, prey_genome=None, pred_genome=None, filename=None, use_dialog=True):
+        """Saves the highest performing genomes and run metadata to a selected file."""
+
+        if prey_genome is None:
+            prey_genome = getattr(self, "best_prey_genome", None) or getattr(self.prey_pop, "best_genome", None)
+
+        if pred_genome is None:
+            pred_genome = getattr(self, "best_predator_genome", None) or getattr(self.predator_pop, "best_genome", None)
+
+        if prey_genome is None or pred_genome is None:
+            print("ERROR: No best models available to save yet.")
+            return False
+
+        if use_dialog:
+            filepath = self._ask_model_save_path()
+            if not filepath:
+                print("Save cancelled.")
+                return False
         else:
+            if filename is None:
+                filename = "best_models.pkl"
+
+            os.makedirs("checkpoints", exist_ok=True)
+            filepath = os.path.join("checkpoints", filename)
+
+        payload = {
+            "prey": copy.deepcopy(prey_genome),
+            "predator": copy.deepcopy(pred_genome),
+            "metadata": {
+                "best_prey_raw_fitness": getattr(self, "best_prey_raw_fitness", None),
+                "best_predator_raw_fitness": getattr(self, "best_predator_raw_fitness", None),
+                "prey_pop_generation": self.prey_pop.generation,
+                "predator_pop_generation": self.predator_pop.generation,
+                "sim_config": self._get_sim_config_snapshot() if hasattr(self, "_get_sim_config_snapshot") else {}
+            }
+        }
+
+        with open(filepath, "wb") as f:
+            pickle.dump(payload, f)
+
+        print(f"SUCCESS: Best models saved to {filepath}")
+        return True
+
+    def load_best_models(self, filename=None, use_dialog=True):
+        """Loads saved prey and predator genomes from a selected file."""
+
+        if use_dialog:
+            filepath = self._ask_model_load_path()
+            if not filepath:
+                print("Load cancelled.")
+                return None, None
+        else:
+            if filename is None:
+                filename = "best_models.pkl"
+
+            filepath = os.path.join("checkpoints", filename)
+
+        if not os.path.exists(filepath):
             print(f"ERROR: Could not find {filepath}")
             return None, None
+
+        try:
+            with open(filepath, "rb") as f:
+                data = pickle.load(f)
+        except Exception as error:
+            print(f"ERROR: Failed to load model file: {error}")
+            return None, None
+
+        if not isinstance(data, dict):
+            print(f"ERROR: Invalid model file format: {filepath}")
+            return None, None
+
+        prey_genome = data.get("prey")
+        predator_genome = data.get("predator")
+
+        if prey_genome is None or predator_genome is None:
+            print(f"ERROR: Model file is missing prey or predator genome: {filepath}")
+            return None, None
+
+        self.loaded_model_metadata = data.get("metadata", {})
+        self.last_loaded_model_path = filepath
+
+        print(f"SUCCESS: Models loaded from {filepath}")
+
+        if self.loaded_model_metadata:
+            prey_fit = self.loaded_model_metadata.get("best_prey_raw_fitness", "unknown")
+            pred_fit = self.loaded_model_metadata.get("best_predator_raw_fitness", "unknown")
+            print(f"Loaded prey raw fitness: {prey_fit}")
+            print(f"Loaded predator raw fitness: {pred_fit}")
+
+        return prey_genome, predator_genome
+    
+    def watch_best_models(self, prey_genome=None, pred_genome=None, rounds: int = 1, prey_count: int | None = None, predator_count: int | None = None):
+        """Runs a visual simulation using loaded/saved best genomes."""
+
+        if prey_genome is None or pred_genome is None:
+            prey_genome, pred_genome = self.load_best_models(use_dialog=True)
+
+        if prey_genome is None or pred_genome is None:
+            return False
+
+        if prey_count is None:
+            prey_count = self.prey_config.pop_size
+
+        if predator_count is None:
+            predator_count = self.predator_config.pop_size
+
+        self.training_abort_requested = False
+        self.app_quit_requested = False
+        self.is_paused = False
+        self.selected_entity = None
+        self.is_dragging = False
+
+        for round_index in range(rounds):
+            if self.training_abort_requested or self.app_quit_requested:
+                break
+
+            print(f"Watching saved models: round {round_index + 1} / {rounds}")
+
+            prey_genomes = [(i, prey_genome) for i in range(prey_count)]
+            predator_genomes = [(i, pred_genome) for i in range(predator_count)]
+
+            self.evaluate_generation(
+                prey_genomes=prey_genomes,
+                predator_genomes=predator_genomes,
+                render_this_gen=True
+            )
+
+        return not self.app_quit_requested

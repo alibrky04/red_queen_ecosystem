@@ -15,7 +15,7 @@ class RenderController:
         self.sidebar_width = getattr(sim_config, 'SIDEBAR_WIDTH', 250)
         
         self.screen = pygame.display.set_mode((self.sim_width + self.sidebar_width, height))
-        pygame.display.set_caption("Red Queen Co-Evolution MVP - Interactive HUD")
+        pygame.display.set_caption("Red Queen Co-Evolution")
         
         # Fonts
         self.font = pygame.font.SysFont("Consolas", 14)
@@ -172,6 +172,7 @@ class RenderController:
         # --- Controls Section ---
         render_text("--- CONTROLS ---", self.TEXT_COLOR, bold=True)
         render_text("[SPACE] Play/Pause", self.TEXT_COLOR)
+        render_text("[ESC]   Stop Run", self.TEXT_COLOR)
         render_text("[CLICK] Select Agent/Food", self.TEXT_COLOR)
         render_text("[DRAG]  Move Selected", self.TEXT_COLOR)
         render_text("[DEL]   Kill/Remove", self.TEXT_COLOR)
