@@ -271,11 +271,8 @@ class AppManager:
             
             prey_nets, predator_nets = self.evaluate_generation(prey_genomes, predator_genomes, render_this_gen)
 
-            for genome, net, agent in prey_nets:
-                genome.fitness = self._calculate_prey_fitness(agent, genome)
-                
-            for genome, net, agent in predator_nets:
-                genome.fitness = self._calculate_predator_fitness(agent, genome)
+            self._assign_scaled_fitness(prey_nets, self._calculate_prey_fitness)
+            self._assign_scaled_fitness(predator_nets, self._calculate_predator_fitness)
 
             self.log_and_print_metrics(generation + 1, prey_nets, predator_nets)
 
@@ -363,13 +360,16 @@ class AppManager:
             
             if not self.is_paused:
                 missing_food = sim_config.FOOD_COUNT - len(self.sim.foods)
-                if missing_food > 0:
+                if missing_food > 0 and generation_frames % sim_config.FOOD_GENERATION_FRAMES == 0:
                     self.add_food(missing_food)
                 
                 # INTENTION (Move and Record State)
                 for genome, net, agent in prey_nets:
                     if agent.is_alive:
-                        agent.foods_before_step = agent.foods 
+                        agent.foods_before_step = agent.foods
+                        agent.last_predator_distance = self._closest_predator_distance(agent)
+                        agent.last_food_distance = self._closest_food_distance(agent)
+
                         inputs = self.sim.get_agent_inputs(agent, self.sim.predators, self.sim.foods)
                         outputs = net.activate(flatten_nn_inputs(inputs))
                         agent.apply_action(NNOutputs(*outputs), self.width, self.height)
@@ -385,14 +385,35 @@ class AppManager:
                             agent.seen_prey_frames += 1
                             agent.hunt_score += 1.0 - inputs.closest_enemy_distance
 
+                        if agent.attack_cooldown > 0:
+                            agent.attack_cooldown = max(0, agent.attack_cooldown - 1)
+
                 # RESOLUTION (Physics & Collisions)
                 self.sim.update_physics()
-
+                
                 for genome, net, agent in predator_nets:
                     if agent.is_alive and agent.last_prey_distance is not None:
                         new_dist = self._closest_prey_distance(agent)
                         if new_dist is not None:
                             agent.approach_score += max(0.0, agent.last_prey_distance - new_dist)
+
+                for genome, net, agent in prey_nets:
+                    if not agent.is_alive:
+                        continue
+
+                    if getattr(agent, "last_food_distance", None) is not None:
+                        new_food_dist = self._closest_food_distance(agent)
+                        if new_food_dist is not None:
+                            agent.food_approach_score = getattr(agent, "food_approach_score", 0.0)
+                            agent.food_approach_score += max(0.0, agent.last_food_distance - new_food_dist)
+
+                    if getattr(agent, "last_predator_distance", None) is not None:
+                        new_pred_dist = self._closest_predator_distance(agent)
+                        if new_pred_dist is not None:
+                            if agent.last_predator_distance < sim_config.PREY_DANGER_RADIUS:
+                                agent.danger_frames = getattr(agent, "danger_frames", 0) + 1
+                                agent.escape_score = getattr(agent, "escape_score", 0.0)
+                                agent.escape_score += max(0.0, new_pred_dist - agent.last_predator_distance)
                 
                 # CONSEQUENCE (Hunger & Survival)
                 for genome, net, agent in prey_nets:
@@ -447,40 +468,94 @@ class AppManager:
             if len(self.sim.preys) == 0:
                 is_running = False
 
-        for genome, net, agent in prey_nets:
-            genome.fitness = self._calculate_prey_fitness(agent, genome)
-            
-        for genome, net, agent in predator_nets:
-            genome.fitness = self._calculate_predator_fitness(agent, genome)
-
         return prey_nets, predator_nets
 
     def _calculate_prey_fitness(self, agent, genome) -> float:
-        node_cost = len(genome.nodes) * 3
-        conn_cost = len([c for c in genome.connections.values() if c.enabled]) * 1
+        node_cost = len(genome.nodes) * 2
+        conn_cost = len([c for c in genome.connections.values() if c.enabled]) * 0.5
         metabolic_penalty = node_cost + conn_cost
-        fitness = (agent.foods * 500) + agent.survival_frames - (agent.wall_frames * 5) - metabolic_penalty
-        return max(0.001, fitness)
+        
+        alive_bonus = 400 if agent.is_alive else 0
 
-    def _calculate_predator_fitness(self, agent, genome) -> float:
-        node_cost = len(genome.nodes) * 3
-        conn_cost = len([c for c in genome.connections.values() if c.enabled]) * 1
-        metabolic_penalty = node_cost + conn_cost
+        food_approach_score = getattr(agent, "food_approach_score", 0.0)
+        escape_score = getattr(agent, "escape_score", 0.0)
+        danger_frames = getattr(agent, "danger_frames", 0)
+        contact_danger_frames = getattr(agent, "contact_danger_frames", 0)
+        idle_frames = getattr(agent, "idle_frames", 0)
+        jitter_frames = getattr(agent, "jitter_frames", 0)
+
         fitness = (
-            (agent.kills * 1500)
-            + (agent.approach_score * 4.0)
-            + (agent.hunt_score * 0.5)
-            + (agent.seen_prey_frames * 0.05)
-            - (agent.wall_frames * 8)
+            (agent.foods * 900.0)
+            + (food_approach_score * 8.0)
+            + (escape_score * 16.0)
+            + (agent.survival_frames * 2.0)
+            + alive_bonus
+            - (danger_frames * 1.0)
+            - (contact_danger_frames * 60.0)
+            - (agent.wall_frames * 25.0)
+            - (idle_frames * 1.0)
+            - (jitter_frames * 0.5)
             - metabolic_penalty
         )
-        return max(0.001, fitness)
+
+        return fitness
+
+    def _calculate_predator_fitness(self, agent, genome) -> float:
+        node_cost = len(genome.nodes) * 2
+        conn_cost = len([c for c in genome.connections.values() if c.enabled]) * 0.5
+        metabolic_penalty = node_cost + conn_cost
+
+        first_kill = min(agent.kills, 1)
+        second_kill = min(max(agent.kills - 1, 0), 1)
+        extra_kills = max(agent.kills - 2, 0)
+
+        kill_score = (
+            first_kill * 2200.0
+            + second_kill * 900.0
+            + extra_kills * 300.0
+        )
+
+        camp_frames = getattr(agent, "camp_frames", 0)
+        idle_frames = getattr(agent, "idle_frames", 0)
+        jitter_frames = getattr(agent, "jitter_frames", 0)
+
+        fitness = (
+            kill_score
+            + (agent.approach_score * 10.0)
+            + (agent.hunt_score * 0.2)
+            + (agent.seen_prey_frames * 0.02)
+            - (camp_frames * 35.0)
+            - (idle_frames * 2.0)
+            - (jitter_frames * 3.0)
+            - (agent.wall_frames * 20.0)
+            - metabolic_penalty
+        )
+
+        return fitness
+    
+    def _assign_scaled_fitness(self, nets, raw_fn):
+        raws = [raw_fn(agent, genome) for genome, _, agent in nets]
+        min_raw = min(raws)
+
+        for (genome, _, _), raw in zip(nets, raws):
+            genome.fitness = max(0.001, raw - min_raw + 1.0)
     
     def _closest_prey_distance(self, predator):
         living_preys = [p for p in self.sim.preys if p.is_alive]
         if not living_preys:
             return None
         return min(math.hypot(p.x - predator.x, p.y - predator.y) for p in living_preys)
+    
+    def _closest_predator_distance(self, prey):
+        living_predators = [p for p in self.sim.predators if p.is_alive]
+        if not living_predators:
+            return None
+        return min(math.hypot(p.x - prey.x, p.y - prey.y) for p in living_predators)
+    
+    def _closest_food_distance(self, prey):
+        if not self.sim.foods:
+            return None
+        return min(math.hypot(f.x - prey.x, f.y - prey.y) for f in self.sim.foods)
     
     def add_food(self, n: int | None = None):
         if n is None:
@@ -580,6 +655,9 @@ class AppManager:
         pred_nodes = [len(genome.nodes) for genome, _, _ in predator_nets]
         pred_conns = [len([c for c in genome.connections.values() if c.enabled]) for genome, _, _ in predator_nets]
 
+        alive_prey_end = sum(1 for _, _, agent in prey_nets if agent.is_alive)
+        alive_pred_end = sum(1 for _, _, agent in predator_nets if agent.is_alive)
+
         stats = {
             "generation": generation,
             "avg_prey_survival": round(avg_prey_survival, 2),
@@ -591,7 +669,9 @@ class AppManager:
             "avg_prey_nodes": round(sum(prey_nodes) / len(prey_nodes), 2),
             "avg_prey_connections": round(sum(prey_conns) / len(prey_conns), 2),
             "avg_pred_nodes": round(sum(pred_nodes) / len(pred_nodes), 2),
-            "avg_pred_connections": round(sum(pred_conns) / len(pred_conns), 2)
+            "avg_pred_connections": round(sum(pred_conns) / len(pred_conns), 2),
+            "alive_prey_end": alive_prey_end,
+            "alive_pred_end": alive_pred_end
         }
         self.metrics_history.append(stats)
 

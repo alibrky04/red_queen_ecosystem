@@ -1,7 +1,6 @@
 import math
-from src.models.prey import Prey
-from src.models.predator import Predator
 from src.configs.nn_config import NNInputs
+import src.configs.sim_config as sim_config
 
 class SimulationController:
     """Manages the environment state, physics, and collisions."""
@@ -17,23 +16,62 @@ class SimulationController:
         self._check_collisions()
 
     def _check_collisions(self):
-        """Calculates distance between predators and prey to determine eating."""
         for predator in self.predators:
+            if not predator.is_alive:
+                continue
+
             for prey in self.preys:
                 if not prey.is_alive:
                     continue
-                
+
                 dist = math.hypot(predator.x - prey.x, predator.y - prey.y)
-                if dist < (predator.radius + prey.radius):
+                attack_distance = predator.radius + prey.radius
+
+                if dist >= attack_distance:
+                    continue
+
+                if getattr(predator, "attack_cooldown", 0) <= 0:
                     prey.is_alive = False
                     predator.kills += 1
+                    predator.attack_cooldown = sim_config.PRED_ATTACK_COOLDOWN
+                    break
+
+                predator.camp_frames = getattr(predator, "camp_frames", 0) + 1
+                prey.contact_danger_frames = getattr(prey, "contact_danger_frames", 0) + 1
+
+                if dist > 0.0001:
+                    nx = (prey.x - predator.x) / dist
+                    ny = (prey.y - predator.y) / dist
+                else:
+                    nx, ny = 1.0, 0.0
+
+                overlap = attack_distance - dist
+
+                prey_push = overlap * 0.8 + 1.5
+                pred_push = overlap * 0.2
+
+                prey.x = max(prey.radius, min(prey.x + nx * prey_push, self.width - prey.radius))
+                prey.y = max(prey.radius, min(prey.y + ny * prey_push, self.height - prey.radius))
+
+                predator.x = max(predator.radius, min(predator.x - nx * pred_push, self.width - predator.radius))
+                predator.y = max(predator.radius, min(predator.y - ny * pred_push, self.height - predator.radius))
+
+                prey.vx = max(-1.0, min(1.0, prey.vx + nx * 0.4))
+                prey.vy = max(-1.0, min(1.0, prey.vy + ny * 0.4))
+
+                predator.vx *= 0.35
+                predator.vy *= 0.35
 
         for prey in self.preys:
-            for food in self.foods:
+            if not prey.is_alive:
+                continue
+
+            for food in list(self.foods):
                 dist = math.hypot(prey.x - food.x, prey.y - food.y)
                 if dist < (prey.radius + food.radius):
                     self.foods.remove(food)
                     prey.foods += 1
+                    break
                     
         self.preys = [p for p in self.preys if p.is_alive]
         self.predators = [p for p in self.predators if p.is_alive]
@@ -64,6 +102,8 @@ class SimulationController:
 
         if enemies:
             for enemy in enemies:
+                if hasattr(enemy, "is_alive") and not enemy.is_alive:
+                    continue
                 raw_dx = enemy.x - agent.x
                 raw_dy = enemy.y - agent.y
                 distance = math.hypot(raw_dx, raw_dy)
